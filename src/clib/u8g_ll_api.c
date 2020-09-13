@@ -39,6 +39,13 @@
 #include <stddef.h>
 #include "u8g.h"
 
+#define MAIN_MEMORY_LCD_FRAMEBUFFER
+
+#ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+unsigned char s_framebuffer[1024];
+#endif
+
+
 uint8_t u8g_call_dev_fn(u8g_t *u8g, u8g_dev_t *dev, uint8_t msg, void *arg)
 {
   return dev->dev_fn(u8g, dev, msg, arg);
@@ -53,6 +60,11 @@ uint8_t u8g_InitLL(u8g_t *u8g, u8g_dev_t *dev)
   r =  u8g_call_dev_fn(u8g, dev, U8G_DEV_MSG_INIT, NULL);
   u8g->state_cb(U8G_STATE_MSG_BACKUP_U8G);
   u8g->state_cb(U8G_STATE_MSG_RESTORE_ENV);
+
+  #ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+  memset(s_framebuffer, 0, sizeof(s_framebuffer));
+  #endif
+
   return r;
 }
 
@@ -90,7 +102,20 @@ void u8g_DrawPixelLL(u8g_t *u8g, u8g_dev_t *dev, u8g_uint_t x, u8g_uint_t y)
   arg->x = x;
   arg->y = y;
   u8g_call_dev_fn(u8g, dev, U8G_DEV_MSG_SET_PIXEL, arg);
+
+  #ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+  int offset = y * 128 + x;
+  int byte = offset / 8;
+  int bit = 7 - offset & 7;
+
+  if ((byte >= 0) && (byte < sizeof(s_framebuffer)))
+    s_framebuffer[byte] |= (1 << bit);
+  #endif
 }
+
+#ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+static unsigned char BitReverseLookup[16] = { 0, 8, 4, 12, 2, 10, 6, 14, 1, 9, 5, 13, 3, 11, 7, 15 };
+#endif
 
 void u8g_Draw8PixelLL(u8g_t *u8g, u8g_dev_t *dev, u8g_uint_t x, u8g_uint_t y, uint8_t dir, uint8_t pixel)
 {
@@ -100,6 +125,79 @@ void u8g_Draw8PixelLL(u8g_t *u8g, u8g_dev_t *dev, u8g_uint_t x, u8g_uint_t y, ui
   arg->dir = dir;
   arg->pixel = pixel;
   u8g_call_dev_fn(u8g, dev, U8G_DEV_MSG_SET_8PIXEL, arg);
+
+  #ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+  switch (dir)
+  {
+    case 2: // left
+    {
+      int highNybble = pixel >> 4;
+      int lowNybble = pixel & 0xF;
+
+      highNybble = BitReverseLookup[highNybble];
+      lowNybble = BitReverseLookup[lowNybble];
+
+      pixel = (lowNybble << 4) | highNybble;
+
+      x = x - 7;
+      // Flow into next case.
+    }
+    case 0: // right
+    {
+      int offset = y * 128 + x;
+      int byte = offset / 8;
+
+      if ((byte < 0) || (byte >= sizeof(s_framebuffer)))
+        break;
+
+      int overflowBits = x & 7;
+
+      if (overflowBits == 0)
+        s_framebuffer[byte] = pixel;
+      else
+      {
+        int directBits = 8 - overflowBits;
+
+        int mask = (0xFF00 >> overflowBits) & 0xFF;
+        s_framebuffer[byte] = (s_framebuffer[byte] & mask) | (pixel >> overflowBits);
+
+        byte++;
+
+        if ((byte < 0) || (byte >= sizeof(s_framebuffer)))
+          break;
+
+        mask = 0xFF >> overflowBits;
+        s_framebuffer[byte] = (s_framebuffer[byte] & mask) | ((pixel << directBits) & 0xFF);
+      }
+
+      break;
+    }
+    case 1: // down
+    case 3: // up
+    {
+      int deltaY = (dir == 1) ? 1 : -1;
+
+      int offset = y * 128 + x;
+      int byte = offset / 8;
+
+      int deltaByte = deltaY * (128 / 8);
+
+      int setBit = 128 >> (x & 7);
+      int mask = 0xFF ^ setBit;
+
+      for (int testBit = 128; testBit > 0; testBit >>= 1)
+      {
+        if ((byte < 0) || (byte >= sizeof(s_framebuffer)))
+          break;
+
+        s_framebuffer[byte] = (s_framebuffer[byte] & mask) | ((pixel & testBit) ? setBit : 0);
+        byte += deltaByte;
+      }
+
+      break;
+    }
+  }
+  #endif
 }
 
 void u8g_Draw4TPixelLL(u8g_t *u8g, u8g_dev_t *dev, u8g_uint_t x, u8g_uint_t y, uint8_t dir, uint8_t pixel)
@@ -110,6 +208,10 @@ void u8g_Draw4TPixelLL(u8g_t *u8g, u8g_dev_t *dev, u8g_uint_t x, u8g_uint_t y, u
   arg->dir = dir;
   arg->pixel = pixel;
   u8g_call_dev_fn(u8g, dev, U8G_DEV_MSG_SET_4TPIXEL, arg);
+
+  #ifdef MAIN_MEMORY_LCD_FRAMEBUFFER
+  // Not implemented
+  #endif
 }
 
 
